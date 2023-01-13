@@ -1,0 +1,63 @@
+#!/usr/bin/env python3
+
+#
+# Prerequisites:
+# FitBit API Setup
+# * See the comments in the 'fitbit_creds_setup' script.
+#
+
+QUIET = False
+
+
+
+import inspect
+import json
+import logging
+import os
+from datetime import datetime, date
+
+from fitbit import FitbitClient, expand_date_range
+
+# Log levels: debug info warning error/exception critical
+root_logger = logging.getLogger()
+root_logger.setLevel(logging.NOTSET)
+console = logging.StreamHandler()
+console.setLevel(logging.INFO if QUIET else logging.DEBUG)
+console_format = '%(levelname)s: %(message)s'
+#console_format = '%(asctime)s %(name)s %(pathname)s %(lineno)i %(levelname)s: %(message)s'
+console.setFormatter(logging.Formatter(fmt=console_format, datefmt='%F %T'))
+root_logger.addHandler(console)
+
+logging.getLogger('urllib3').setLevel(logging.INFO)
+_log = logging.getLogger(__name__)
+
+SCRIPT_PATH = os.path.dirname(os.path.realpath(inspect.getfile(inspect.currentframe())))
+
+fitbit = FitbitClient(creds_path=SCRIPT_PATH)
+
+# Pretty-format a data structure.
+def serializer(obj):
+  if isinstance(obj, (datetime, date)):
+    return obj.isoformat()
+  return str(obj)
+  #raise TypeError(f'Object of type {o.__class__.__name__} is not JSON serializable')
+def pretty(data, sort_keys=False):
+  return json.dumps(data, indent=2, sort_keys=sort_keys, default=serializer)
+
+
+
+if 'nutrition' not in fitbit.scopes:
+  _log.info("Skipping import of food data from FitBit due to missing 'nutrition' scope in FitBit credentials")
+  sys.exit(2)
+
+food_data = []
+for d in expand_date_range(('2022-12-20', '2022-12-22')):
+  # Docs:
+  # https://dev.fitbit.com/build/reference/web-api/nutrition/get-food-log/
+  # https://dev.fitbit.com/build/reference/web-api/nutrition/create-food-log/
+  r = fitbit.get(f"/1/user/-/foods/log/date/{d}.json")
+  r.raise_for_status()
+  data = r.json()
+  data['date'] = d
+  food_data.append(data)
+print(pretty(food_data))

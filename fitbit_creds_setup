@@ -1,0 +1,179 @@
+#!/usr/bin/env python3
+
+#
+# Prerequisites:
+# Python Setup
+#  sudo apt-get install python3-requests
+# FitBit API Setup
+#  Initial Setup:
+#  * Run `touch fitbit.creds ; chmod 600 fitbit.creds`
+#  * Register a FitBit "application" per the instructions at:
+#    https://dev.fitbit.com/build/reference/web-api/developer-guide/getting-started/
+#  * For "Redirect URL", use any https URL that only you can see the logs for.  (This URL does not
+#    actually have to exist or return a valid page, it simply must not expose the query parameters
+#    to someone else when you access it.)
+#  * Edit 'fitbit.creds', put the "OAuth 2.0 Client ID" on the first line of this file, and
+#    optionally put the "Client Secret" on the second line.  Do not add any other text or data to
+#    this file.
+#    If the "Client Secret" is included then "Server" or "Confidential" OAuth tokens will be
+#    generated, otherwise "Client" or "Public" OAuth tokens will be generated.  "Server" or
+#    "Confidential" tokens must be stored such that they are only accessible to the app developer.
+#    "Client" or "Public" tokens must be stored such that they are only accessible to the app
+#    developer or the end user that the tokens are for.
+#    The FitBit docs do not explain the impact of the token type, but it sounds like some data may
+#    not be available when using "Client" credentials.
+#  * Review the `SCOPES` value below and update if necessary.
+#  * Run this script and follow the instructions.
+#  Additional Credentials:
+#  * Move the 'fitbit.creds' file to another location.
+#  * Repeat the "Initial Setup" process above to generate additional credentials for the same FitBit
+#    end user.  A new "application" must be created, but the same "Redirect URL" may be used.
+#    (For each "application" and end user, only one Refresh Token is valid at a time.  So, you must
+#    register an additional "application" to store/use multiple independent credentials files.)
+#  Replacement Credentials:
+#  * To invalidate old Credentials, click "Regenerate Credentials" on the "application" on the
+#    FitBit website, then either update the 'client_id' and 'client_secret' values in 'fitbit.creds'
+#    or delete and recreate 'fitbit.creds' as described in "Initial Setup" above.
+#  * Run this script and follow the instructions.  'fitbit.creds' will be replaced with new
+#    credentials.
+#
+# Documentation:
+# https://dev.fitbit.com/build/reference/web-api/
+# The following web page performs the same process as this script, and may be used instead of this
+# script:
+#   https://dev.fitbit.com/build/reference/web-api/troubleshooting-guide/oauth2-tutorial/
+#   To generate the 'fitbit.creds' file, take the output of Step 4, reformat it for readability,
+#   add a 'client_id' field with the "OAuth 2.0 Client ID", if you generated "Server" or
+#   "Confidential" OAuth tokens then add a 'client_secret' field with the "Client Secret", and add
+#   an 'issued_at' field with a date and time (yyyy-mm-ddThh:mm) at or before the time when the
+#   tokens were issued.
+#
+
+CREDS_FILE = 'fitbit.creds'
+# Scope Docs: https://dev.fitbit.com/build/reference/web-api/developer-guide/application-design/#Scopes
+#SCOPES = [
+#  'activity', 'cardio_fitness', 'electrocardiogram', 'heartrate', 'location', 'nutrition',
+#  'oxygen_saturation', 'profile', 'respiratory_rate', 'settings', 'sleep', 'social', 'temperature',
+#  'weight',
+#]
+SCOPES = ['nutrition']
+TIMEOUT = 10  # Seconds
+
+
+
+import base64
+import hashlib
+import inspect
+import json
+import os
+import re
+import requests
+import secrets
+import sys
+from datetime import datetime, date, timedelta
+from urllib.parse import urlparse, urlencode, urlunparse
+
+import filesystem
+
+# Find the creds file in the same path as this script.
+SCRIPT_PATH = os.path.dirname(os.path.realpath(inspect.getfile(inspect.currentframe())))
+CREDS_PATH = os.path.join(SCRIPT_PATH, CREDS_FILE)
+
+# Pretty-format a data structure.
+def serializer(obj):
+  if isinstance(obj, (datetime, date)):
+    return obj.isoformat()
+  return str(obj)
+  #raise TypeError(f'Object of type {o.__class__.__name__} is not JSON serializable')
+def pretty_write(file_handle, data, sort_keys=False):
+  json.dump(data, file_handle, indent=2, sort_keys=sort_keys, default=serializer)
+  file_handle.write('\n')
+def pretty(data, sort_keys=False):
+  return json.dumps(data, indent=2, sort_keys=sort_keys, default=serializer)
+
+
+
+# Read the "Client ID" and optional "Client Secret".
+with open(CREDS_PATH, 'r') as f:
+  # json.load() throws a generic exception if the file is empty, so check for that explicitly
+  if f.read(1) == '':
+    raise Exception(f"Data file '{DATA_FILE}' is empty")
+  f.seek(0)
+  try:
+    old_creds = json.load(f)
+    client_id = old_creds['client_id']
+    client_secret = old_creds['client_secret']
+  except json.decoder.JSONDecodeError:
+    f.seek(0)
+    client_id = f.readline().strip()
+    client_secret = f.readline().strip()
+
+# Generate and display the Authorization URL.
+# FitBit supports 43-128 byte code_verifier.  Most OAuth documentation uses 32-40 bytes.
+code_verifier = secrets.token_urlsafe(64)[:64]
+code_challenge = hashlib.sha256(code_verifier.encode('utf-8')).digest()
+code_challenge = base64.urlsafe_b64encode(code_challenge).decode('utf-8')
+code_challenge = code_challenge.replace('=', '')
+auth_url = 'https://www.fitbit.com/oauth2/authorize'
+auth_params = {
+  'client_id': client_id, 'scope': ' '.join(SCOPES),
+  'code_challenge': code_challenge, 'code_challenge_method': 'S256',
+  'response_type': 'code',
+}
+auth_url = list(urlparse(auth_url))
+auth_url[4] = urlencode(auth_params)
+auth_url = urlunparse(auth_url)
+print(f"""
+Open the following URL in a web browser.
+After authorizing access, copy the final URL from the web browser (it should
+look something like 'https://example.com/callback?code=...#_=_') and paste it in
+this terminal.
+
+{auth_url}
+""")
+
+# Parse the Authorization Code from the Callback URL.
+callback_regex = re.compile(r'[?&]code=([^&#\n]+)')
+while True:
+  callback_url = sys.stdin.readline()
+  m = callback_regex.search(callback_url)
+  if m:
+    auth_code = m.group(1)
+    break
+  print('Invalid final URL.  Please try again.\n', file=sys.stderr)
+print()
+
+# Retrieve and parse the Access and Refresh Tokens.
+token_url = 'https://api.fitbit.com/oauth2/token'
+token_headers = {
+  'Content-Type': 'application/x-www-form-urlencoded',
+  'Accept': 'application/json',
+}
+if client_secret:
+  app_auth_data = base64.urlsafe_b64encode((client_id+':'+client_secret).encode('utf-8')).decode('utf-8')
+  token_headers['Authorization'] = 'Basic '+app_auth_data
+token_params = {
+  'grant_type': 'authorization_code', 'code': auth_code,
+  'client_id': client_id, 'code_verifier': code_verifier,
+}
+issued_at = datetime.now()
+r = requests.post(token_url, headers=token_headers, data=token_params, timeout=TIMEOUT)
+if r.status_code != 200:
+  print(f"ERROR: '{token_url}' returned HTTP error {r.status_code}:\n{r.text}", file=sys.stderr)
+  sys.exit(10)
+token_data = r.json()
+
+# Add the "Client ID", optional "Client Secret", 'issued_at', and 'expires_at' to the credentials
+# data.
+token_data['client_id'] = client_id
+if client_secret:
+  token_data['client_secret'] = client_secret
+token_data['issued_at'] = issued_at
+if 'expires_in' in token_data and token_data['expires_in'] > 0:
+  token_data['expires_at'] = issued_at + timedelta(seconds=token_data['expires_in'])
+
+# Save the Access and Refresh Tokens in a credentials file.
+with filesystem.open_for_atomic_isolated_durable_read_write(CREDS_PATH, perms=0o600) as f:
+  pretty_write(f, token_data, sort_keys=True)
+
+print(f"Successfully generated '{CREDS_FILE}'")
